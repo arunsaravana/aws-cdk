@@ -1,0 +1,213 @@
+AWSTemplateFormatVersion: 2010-09-09
+# This CloudFormation template deploys a basic VPC / Network. 
+Parameters: 
+  InstanceTypeParameter: 
+    Type: String
+    Default: t2.micro
+    AllowedValues: 
+            - t2.micro
+            - m1.small
+            - m1.large
+    Description: Enter t2.micro, m1.small, or m1.large. Default is t2.micro.
+Mappings:
+
+  AWSRegionAMI:
+    us-east-1:
+      HVM64: ami-0e2ff28bfb72a4e45
+    eu-west-1:
+      HVM64: ami-0e61341fa75fcaa18
+    ap-southeast-2:
+      HVM64: ami-01393ce9a3ca55d67
+    ap-south-1:
+      HVM64: ami-05695932c5299858a
+Resources:
+#VPC Creation
+  devvpc:
+    Type: AWS::EC2::VPC
+    Properties:
+        CidrBlock: 10.1.0.0/16
+        EnableDnsSupport: true
+        EnableDnsHostnames: true
+#Subnet Creation   
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+        AvailabilityZone: us-east-1a
+        VpcId: !Ref devvpc
+        CidrBlock: 10.1.0.0/18
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+        AvailabilityZone: us-east-1b
+        VpcId: !Ref devvpc
+        CidrBlock: 10.1.64.0/18
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+        AvailabilityZone: us-east-1c
+        VpcId: !Ref devvpc
+        CidrBlock: 10.1.128.0/18
+#InternetGateway
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref devvpc
+      InternetGatewayId: !Ref InternetGateway
+#NATGateway     
+  natgateway1a:
+    Type: AWS::EC2::NatGateway  
+    Properties: 
+        AllocationId: !GetAtt ElasticIPAddress1a.AllocationId
+        SubnetId: !Ref PrivateSubnetA
+  natgateway1b:
+    Type: AWS::EC2::NatGateway  
+    Properties: 
+        AllocationId: !GetAtt ElasticIPAddress1b.AllocationId
+        SubnetId:  !Ref PrivateSubnetB
+# EIP For NATGateway
+  ElasticIPAddress1a:
+   Type: AWS::EC2::EIP
+   Properties:
+     Domain: VPC  
+  ElasticIPAddress1b:
+   Type: AWS::EC2::EIP
+   Properties:
+     Domain: VPC
+ #RouteTable Creation
+  PrivateRT1a:
+    Type: AWS::EC2::RouteTable
+    Properties:
+        VpcId: !Ref devvpc
+  PrivateRT1b:
+    Type: AWS::EC2::RouteTable
+    Properties:
+        VpcId: !Ref devvpc
+  PublicRT:
+    Type: AWS::EC2::RouteTable
+    Properties:
+        VpcId: !Ref devvpc
+#RouteTable Association
+  PrivateSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: 
+        RouteTableId: !Ref PrivateRT1a
+        SubnetId: !Ref PrivateSubnetA
+  PrivateSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: 
+        RouteTableId: !Ref PrivateRT1b
+        SubnetId: !Ref PrivateSubnetB  
+        
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: 
+        RouteTableId: !Ref PublicRT
+        SubnetId: !Ref PublicSubnet    
+#Gateway Association
+  PublicRoute:
+    Type: AWS::EC2::Route
+    #DependsOn: GatewayToInternet
+    Properties:
+        RouteTableId: !Ref PublicRT
+        DestinationCidrBlock: 0.0.0.0/0
+        GatewayId: !Ref InternetGateway
+  PrivateARoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRT1a
+      DestinationCidrBlock: 0.0.0.0/0
+      # Route traffic through the NAT Gateway:
+      NatGatewayId: !Ref natgateway1a
+  PrivateBRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRT1b
+      DestinationCidrBlock: 0.0.0.0/0
+      # Route traffic through the NAT Gateway:
+      NatGatewayId: !Ref natgateway1b
+ # Security Group      
+ #Private Security group
+  PrivateSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+        GroupDescription: Private Instance SG
+        VpcId: !Ref devvpc
+        
+  PublicSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+        GroupDescription: Public Instance SG
+        VpcId: !Ref devvpc  
+        
+# SG Rule        
+  PrivateSGingress:
+    Type: AWS::EC2::SecurityGroupIngress  
+    Properties:
+        GroupId: !GetAtt PrivateSG.GroupId
+        SourceSecurityGroupId : !GetAtt PublicSG.GroupId
+        IpProtocol: tcp
+        FromPort: 22
+        ToPort: 22
+  PrivateSGEgress:      
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+        GroupId: !GetAtt PrivateSG.GroupId
+        IpProtocol: -1
+        CidrIp: 0.0.0.0/0       
+        
+  PublicSGingress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+        GroupId: !GetAtt PublicSG.GroupId
+        IpProtocol: tcp
+        CidrIp: 0.0.0.0/0
+        FromPort: 22
+        ToPort: 22        
+  PublicSGEgress:      
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+        GroupId: !GetAtt PublicSG.GroupId
+        IpProtocol: -1
+        #DestinationSecurityGroupId: !GetAtt PrivateSG.GroupId
+        CidrIp: 0.0.0.0/0
+#launch template
+  PrivateInstacelt:
+    Type: AWS::EC2::LaunchTemplate
+    Properties: 
+        LaunchTemplateData: 
+            IamInstanceProfile:
+                Name: instancerole
+            ImageId: !FindInMap [ AWSRegionAMI, !Ref "AWS::Region", HVM64]
+            InstanceType: !Ref InstanceTypeParameter
+            KeyName: arundevnew
+            SecurityGroupIds: [!GetAtt PrivateSG.GroupId]
+        LaunchTemplateName: Privateinstance_lt
+  Privageasg:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties: 
+        AutoScalingGroupName: Privateasg
+        #VPCZoneIdentifier:  [!GetAtt PrivateSubnetA.GroupId , !GetAtt PrivateSubnetB.GroupId]
+        VPCZoneIdentifier:  [!Ref PrivateSubnetA , !Ref PrivateSubnetB]
+        MinSize: "0"
+        MaxSize: "1"
+        DesiredCapacity: "1"
+        HealthCheckGracePeriod: 300
+        LaunchTemplate:
+            LaunchTemplateId: !Ref PrivateInstacelt
+            Version: !GetAtt PrivateInstacelt.LatestVersionNumber
+  bastioninstance:  
+    Type: AWS::EC2::Instance
+    Properties:
+        #AvailabilityZone: !GetAtt PublicSubnet.GroupId
+        ImageId: !FindInMap [ AWSRegionAMI, !Ref "AWS::Region", HVM64]
+        InstanceType: !Ref InstanceTypeParameter
+        KeyName: arundevnew
+        SubnetId: !Ref PublicSubnet
+        SecurityGroupIds:  [!GetAtt PublicSG.GroupId]
+  BastionEIP:
+   Type: AWS::EC2::EIP
+   Properties:
+     InstanceId: !Ref bastioninstance
+     Domain: VPC 
